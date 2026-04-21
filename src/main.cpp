@@ -1,6 +1,19 @@
 #include <Arduino.h>
 #include <driver/i2s.h>
 #include <math.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <ArduinoJson.h>
+
+// ═══════════════════════════════════════════════════════════
+//  REDE — WiFi + UDP para envio de estado ao Unity
+// ═══════════════════════════════════════════════════════════
+const char* WIFI_SSID     = "Victor - 2.4G-EXT";
+const char* WIFI_PASSWORD = "07110589";
+const char* PC_IP         = "192.168.15.65";
+const int   UDP_PORT      = 9000;
+
+WiFiUDP udp;
 
 // ═══════════════════════════════════════════════════════════
 //  PINAGEM
@@ -27,7 +40,7 @@ float alpha    = 0.15;
 //  alphaDown: velocidade de queda em silêncio (lento)
 //  alphaUp:   velocidade de subida com ruído ambiente (lento)
 //
-//  ⚠️  CONGELADO enquanto voz estiver ativa — impede que o
+//  CONGELADO enquanto voz estiver ativa — impede que o
 //  noise floor suba junto com a voz e zere o sinal durante
 //  notas sustentadas ou fala contínua
 // ═══════════════════════════════════════════════════════════
@@ -51,10 +64,6 @@ float dynamicMax = 100.0;
 //      contínuo (norm < thresholdOff por todo esse período)
 //    - Durante voz ativa, lastVoiceMs é renovado a cada
 //      ciclo — o LED nunca pisca no meio de uma fala
-//
-//  thresholdOn:      NORM mínima para ativar (↑ = menos sensível)
-//  thresholdOff:     NORM mínima para manter (↓ = desativa mais fácil)
-//  SILENCE_HANGOVER: ms de silêncio para apagar o LED
 // ═══════════════════════════════════════════════════════════
 bool  isActive         = false;
 float thresholdOn      = 0.50;
@@ -72,10 +81,10 @@ unsigned long startMs     = 0;
 const int     CALIB_MS    = 2000;
 
 // ═══════════════════════════════════════════════════════════
-//  DEBUG
+//  DEBUG + UDP
 // ═══════════════════════════════════════════════════════════
 unsigned long lastPrint = 0;
-const int     PRINT_MS  = 100;
+const int     PRINT_MS  = 100;  // 10x por segundo
 
 // ── Barra visual sem alocação dinâmica ──────────────────────
 void printBar(float v, int width = 20) {
@@ -83,6 +92,69 @@ void printBar(float v, int width = 20) {
   Serial.print("[");
   for (int i = 0; i < width; i++) Serial.print(i < filled ? "#" : "-");
   Serial.print("]");
+}
+
+// ── Conecta WiFi ────────────────────────────────────────────
+void setupWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.print("[WiFi] Conectando");
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+
+    if (attempts > 30) {
+      Serial.println("\n[WiFi] Timeout — reiniciando tentativa...");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+      attempts = 0;
+    }
+  }
+
+  Serial.println("\n[WiFi] ✅ CONECTADO");
+  Serial.print("[WiFi] IP ESP32: ");
+  Serial.println(WiFi.localIP());
+
+  udp.begin(UDP_PORT);
+
+  Serial.print("[UDP] DESTINO: ");
+  Serial.print(PC_IP);
+  Serial.print(":");
+  Serial.println(UDP_PORT);
+}
+
+// ── Envia estado via UDP para o Unity ───────────────────────
+// JSON: {"state":"VOZ","norm":0.85,"amplitude":320.0,"noiseFloor":35.0}
+void sendUDP(float norm, float amplitude, float nFloor, bool active) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[UDP] ⚠ WiFi OFF — pacote não enviado");
+    return;
+  }
+
+  StaticJsonDocument<128> doc;
+  doc["state"]      = active ? "VOZ" : "SILENCIO";
+  doc["norm"]       = norm;
+  doc["amplitude"]  = amplitude;
+  doc["noiseFloor"] = nFloor;
+
+  char buffer[128];
+  serializeJson(doc, buffer);
+
+  udp.beginPacket(PC_IP, UDP_PORT);
+  udp.write((uint8_t*)buffer, strlen(buffer));
+
+  bool success = udp.endPacket();
+
+  if (!success) {
+    Serial.println("[UDP] ❌ ERRO ao enviar pacote");
+  } else {
+    Serial.print("[UDP] ✔ enviado -> ");
+    Serial.println(buffer);
+  }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -96,6 +168,12 @@ void setup() {
   Serial.println("╚══════════════════════════════╝");
   pinMode(LED_PIN, OUTPUT);
 
+  // ── WiFi + UDP ───────────────────────────────────────────
+  setupWiFi();
+
+  // ── Configuração I2S ─────────────────────────────────────
+  // INMP441: 32 bits por amostra, canal RIGHT (L/R = 3.3V)
+  // sample_rate 16kHz suficiente para detecção de voz
   i2s_config_t i2s_config = {
     .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     .sample_rate          = 16000,
@@ -126,12 +204,25 @@ void setup() {
 //  LOOP
 // ════════════════════════════════════════════════════════════
 void loop() {
+
+  // 🔥 AUTO-RECONNECT WiFi
+if (WiFi.status() != WL_CONNECTED) {
+  static unsigned long lastReconnect = 0;
+
+  if (millis() - lastReconnect > 3000) {
+    Serial.println("[WiFi] Reconectando...");
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    lastReconnect = millis();
+  }
+}
+
   size_t bytesIn = 0;
   i2s_read(I2S_PORT, (void*)sBuffer, sizeof(sBuffer), &bytesIn, portMAX_DELAY);
   if (bytesIn == 0) return;
 
   // ── 1. Amplitude média absoluta (MAE) ───────────────────
-  // shift >>14: descarta os 14 LSBs de ruído do INMP441
+  // shift >>16: descarta os 16 LSBs de ruído do INMP441
   int  samples = bytesIn / sizeof(int32_t);
   long sum     = 0;
   for (int i = 0; i < samples; i++) {
@@ -158,10 +249,6 @@ void loop() {
   }
 
   // ── 4. Noise floor adaptativo — CONGELADO durante voz ───
-  // Enquanto isActive=true, noise floor e dynamicMax ficam
-  // congelados no valor aprendido durante o silêncio anterior.
-  // Isso garante que notas sustentadas e fala contínua não
-  // sejam engolidas pela adaptação do ruído de fundo.
   if (!isActive) {
     if (envelope > noiseFloor)
       noiseFloor += noiseAlphaUp   * (envelope - noiseFloor);
@@ -180,8 +267,6 @@ void loop() {
   float norm = constrain(signal / dynamicMax, 0.0f, 1.0f);
 
   // ── 6. Detecção com hangover de silêncio ────────────────
-  // Qualquer pico acima de thresholdOn renova lastVoiceMs —
-  // o LED só apaga após SILENCE_HANGOVER ms sem nenhum pico
   if (norm > thresholdOn) {
     lastVoiceMs = millis();
     isActive    = true;
@@ -192,7 +277,7 @@ void loop() {
 
   digitalWrite(LED_PIN, isActive);
 
-  // ── 7. Debug ─────────────────────────────────────────────
+  // ── 7. Debug + UDP ───────────────────────────────────────
   if (millis() - lastPrint > PRINT_MS) {
     Serial.print("AMP:"); Serial.print(amplitude, 1);
     Serial.print(" ENV:"); Serial.print(envelope,  1);
@@ -201,6 +286,10 @@ void loop() {
     Serial.print(" NRM:"); Serial.print(norm,      2);
     Serial.print(" "); printBar(norm);
     Serial.print(" "); Serial.println(isActive ? ">>> VOZ" : "    SILENCIO");
+
+    // Envia estado para Unity via UDP
+    sendUDP(norm, amplitude, noiseFloor, isActive);
+
     lastPrint = millis();
   }
 }
