@@ -8,8 +8,8 @@
 // ═══════════════════════════════════════════════════════════
 //  REDE — WiFi + UDP para envio de estado ao Unity
 // ═══════════════════════════════════════════════════════════
-const char* WIFI_SSID     = "Victor - 2.4G-EXT";
-const char* WIFI_PASSWORD = "07110589";
+const char* WIFI_SSID     = "999999999";
+const char* WIFI_PASSWORD = "999999999";
 const char* PC_IP         = "192.168.15.65";
 const int   UDP_PORT      = 9000;
 
