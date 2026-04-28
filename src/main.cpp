@@ -4,12 +4,18 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // ═══════════════════════════════════════════════════════════
 //  REDE — WiFi + UDP para envio de estado ao Unity
 // ═══════════════════════════════════════════════════════════
-const char* WIFI_SSID     = "999999999";
-const char* WIFI_PASSWORD = "999999999";
+const char* WIFI_SSID     = "9999";
+const char* WIFI_PASSWORD = "9999";
 const char* PC_IP         = "192.168.15.65";
 const int   UDP_PORT      = 9000;
 
@@ -157,10 +163,63 @@ void sendUDP(float norm, float amplitude, float nFloor, bool active) {
   }
 }
 
+void updateDisplay(float volumeNorm, bool falando) {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  
+  // Status do WiFi
+  display.printf("WiFi: %s\n", (WiFi.status() == WL_CONNECTED ? "OK" : "Erro"));
+  
+  // Status da Voz
+  display.setCursor(0, 15);
+  display.setTextSize(1);
+  display.print("Status: ");
+  if (falando) {
+    display.setTextSize(2);
+    display.println("FALANDO");
+  } else {
+    display.println("Silencio");
+  }
+
+  // Barra de Volume (Gráfico)
+  display.setTextSize(1);
+  int barWidth = map(volumeNorm * 100, 0, 100, 0, 128); 
+  display.drawRect(0, 50, 128, 10, SSD1306_WHITE); // Borda da barra
+  display.fillRect(0, 50, barWidth, 10, SSD1306_WHITE); // Preenchimento
+  
+  display.display();
+}
+
+
+  void desenhaOLED(float volumeNorm, bool falando) {
+  display.clearDisplay();
+
+  // --- PARTE AMARELA (Topo) ---
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print("WiFi: "); display.println(WiFi.status() == WL_CONNECTED ? "ON" : "OFF");
+  
+  // --- PARTE AZUL (Baixo) ---
+  display.setCursor(0, 20);
+  display.print("VOZ: ");
+  if (falando) {
+    display.println(">>> ATIVA <<<");
+  } else {
+    display.println("---      ---");
+  }
+
+  // Desenha uma barra de volume horizontal
+  int larguraBarra = constrain((int)(volumeNorm * 128), 0, 128);
+  display.drawRect(0, 45, 128, 15, SSD1306_WHITE); // Moldura
+  display.fillRect(0, 45, larguraBarra, 15, SSD1306_WHITE); // Volume
+
+  display.display();
+}
+
 // ════════════════════════════════════════════════════════════
 //  SETUP
 // ════════════════════════════════════════════════════════════
-void setup() {
+void setup() {  
   Serial.begin(115200);
   delay(2000);
   Serial.println("╔══════════════════════════════╗");
@@ -170,6 +229,19 @@ void setup() {
 
   // ── WiFi + UDP ───────────────────────────────────────────
   setupWiFi();
+    // Inicializa o OLED no endereço 0x3C
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("OLED falhou"));
+  } else {
+    Wire.setClock(400000);
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0,0);
+    display.println("Sistema Iniciado");
+    display.display();
+  }
+
 
   // ── Configuração I2S ─────────────────────────────────────
   // INMP441: 32 bits por amostra, canal RIGHT (L/R = 3.3V)
@@ -279,6 +351,8 @@ if (WiFi.status() != WL_CONNECTED) {
 
   // ── 7. Debug + UDP ───────────────────────────────────────
   if (millis() - lastPrint > PRINT_MS) {
+    // Atualiza o display com os dados do algoritmo VAD
+    desenhaOLED(envelope / dynamicMax, isActive);
     Serial.print("AMP:"); Serial.print(amplitude, 1);
     Serial.print(" ENV:"); Serial.print(envelope,  1);
     Serial.print(" NSE:"); Serial.print(noiseFloor, 1);
