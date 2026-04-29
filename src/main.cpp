@@ -8,14 +8,15 @@
 #include <Adafruit_SSD1306.h>
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
+#define BUTTON_PIN 27
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // ═══════════════════════════════════════════════════════════
 //  REDE — WiFi + UDP para envio de estado ao Unity
 // ═══════════════════════════════════════════════════════════
-const char* WIFI_SSID     = "9999";
-const char* WIFI_PASSWORD = "9999";
+const char* WIFI_SSID     = "Victor - 2.4G-EXT";
+const char* WIFI_PASSWORD = "07110589";
 const char* PC_IP         = "192.168.15.65";
 const int   UDP_PORT      = 9000;
 
@@ -91,6 +92,9 @@ const int     CALIB_MS    = 2000;
 // ═══════════════════════════════════════════════════════════
 unsigned long lastPrint = 0;
 const int     PRINT_MS  = 100;  // 10x por segundo
+
+bool lastState = HIGH;
+
 
 // ── Barra visual sem alocação dinâmica ──────────────────────
 void printBar(float v, int width = 20) {
@@ -226,7 +230,7 @@ void setup() {
   Serial.println("║     VAD — ESP32 + INMP441    ║");
   Serial.println("╚══════════════════════════════╝");
   pinMode(LED_PIN, OUTPUT);
-
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
   // ── WiFi + UDP ───────────────────────────────────────────
   setupWiFi();
     // Inicializa o OLED no endereço 0x3C
@@ -276,6 +280,16 @@ void setup() {
 //  LOOP
 // ════════════════════════════════════════════════════════════
 void loop() {
+bool current = digitalRead(BUTTON_PIN);
+
+  if (current != lastState) {
+    if (current == LOW) {
+      Serial.println("PRESSIONADO");
+    } else {
+      Serial.println("SOLTO");
+    }
+    lastState = current;
+  }
 
   // 🔥 AUTO-RECONNECT WiFi
 if (WiFi.status() != WL_CONNECTED) {
