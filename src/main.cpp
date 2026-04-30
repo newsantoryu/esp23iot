@@ -204,6 +204,13 @@ void analyze(float freq) {
   float ideal = A4_FREQ * pow(2, (rounded - 69) / 12.0);
   cents = 1200 * log2(freq / ideal);
 
+  // 🔥 VERIFICAÇÃO 432Hz PATTERN
+  Logger::pitch("432Hz Reference - Freq: " + String(freq) + 
+                " Note: " + newNote + 
+                " Ideal: " + String(ideal) + 
+                " Cents: " + String(cents) + 
+                " A4_REF: " + String(A4_FREQ));
+
   // Contador de mudanças de nota para debug
   if (newNote != currentNote && millis() - lastNoteChangeTime > 1000) {
     noteChangeCount++;
@@ -242,20 +249,31 @@ void analyze(float freq) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🎯 UI FIXADA (SEMPRE VISÍVEL)
+// 🎯 UI COM CONTROLE RIGOROSO (432Hz PATTERN)
 // ═══════════════════════════════════════════════════════════
 void drawUI(float norm) {
 
-  // Controle de taxa de atualização
-  unsigned long currentTime = millis();
-  if (currentTime - lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) {
-    return; // Pula atualização se muito rápido
+  // 🔥 BLOQUEIO CRÍTICO: Não atualizar se sinal inativo
+  if (!isActive) {
+    static unsigned long lastInactiveUpdate = 0;
+    unsigned long currentTime = millis();
+    // Só atualizar display inativo a cada 2 segundos
+    if (currentTime - lastInactiveUpdate < 2000) {
+      return;
+    }
+    lastInactiveUpdate = currentTime;
+  } else {
+    // Controle de taxa para sinal ativo
+    unsigned long currentTime = millis();
+    if (currentTime - lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) {
+      return; // Pula atualização se muito rápido
+    }
+    lastDisplayUpdate = currentTime;
   }
-  lastDisplayUpdate = currentTime;
 
   display.clearDisplay();
 
-  // ───────── LINHA 1 (INFO COMPACTA) ─────────
+  // ───────── LINHA 1 (INFO COMPACTA COM 432Hz) ─────────
   display.setTextSize(1);
   display.setCursor(0, 0);
 
@@ -263,14 +281,19 @@ void drawUI(float norm) {
   display.print((int)pitchFinal);
 
   display.setCursor(64, 0);
-  display.print("Nt:");
-  display.print(displayNote);
+  display.print("432:"); // Indicador de padrão
+  if (pitchFinal > 0 && isActive) {
+    float deviation = pitchFinal - 432.0;
+    display.print((int)deviation);
+  } else {
+    display.print("---");
+  }
 
   // ───────── NOTA GRANDE CENTRAL ─────────
   display.setTextSize(3);
   display.setCursor(34, 14);
 
-  if (displayNote != "---") {
+  if (displayNote != "---" && isActive) {
     // Indicador visual de estabilidade
     if (noteStable) {
       display.print(displayNote); // Nota estável
@@ -291,7 +314,7 @@ void drawUI(float norm) {
   if (!isActive) {
     display.print("."); // Idle
   } else if (tuned) {
-    display.print("OK"); // Afinação perfeita
+    display.print("OK"); // Afinação perfeita em 432Hz
   } else if (cents > 0) {
     display.print("DN"); // Desce
   } else {
@@ -300,7 +323,7 @@ void drawUI(float norm) {
 
   // ───────── CENTS + INDICADOR DE ESTABILIDADE ─────────
   display.setCursor(90, 44);
-  if (noteStable) {
+  if (noteStable && isActive) {
     display.printf("%+d", (int)cents);
   } else {
     display.print("~"); // Indicador de instabilidade
