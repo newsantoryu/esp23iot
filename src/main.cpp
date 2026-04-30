@@ -7,6 +7,8 @@
 #include <math.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "utils/Logger.h"
+#include "utils/NoiseFilter.h"
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -31,6 +33,8 @@ float alpha = 0.1;
 float dynamicMax = 100;
 bool isActive = false;
 
+NoiseFilter noiseFilter;
+
 // ───────── PITCH ─────────
 float pitchFinal = 0;
 float pitchHistory[5];
@@ -39,12 +43,6 @@ int pitchIndex = 0;
 float cents = 0;
 bool tuned = false;
 
-// ───────── DISPLAY ESTABILITY ─────────
-unsigned long lastDisplayUpdate = 0;
-const unsigned long DISPLAY_UPDATE_INTERVAL = 100; // 10Hz max
-String displayNote = "---";
-bool noteStable = false;
-
 // ───────── NOTE ─────────
 String currentNote = "---";
 String lockedNote  = "---";
@@ -52,6 +50,17 @@ int stabilityCounter = 0;
 int noteChangeCounter = 0;
 const int NOTE_STABILITY_THRESHOLD = 5; // mais exigente
 const int NOTE_CHANGE_THRESHOLD = 3; // histerese para mudanças
+
+// ───────── DEBUG MODE ─────────
+bool debugMode = false;
+unsigned long noteChangeCount = 0;
+unsigned long lastNoteChangeTime = 0;
+
+// ───────── DISPLAY ESTABILITY ─────────
+unsigned long lastDisplayUpdate = 0;
+const unsigned long DISPLAY_UPDATE_INTERVAL = 100; // 10Hz max
+String displayNote = "---";
+bool noteStable = false;
 
 const char* noteNames[] = {
   "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"
@@ -108,10 +117,13 @@ float smooth(float v) {
 // ═══════════════════════════════════════════════════════════
 void analyze(float freq) {
 
+  Logger::pitch("Freq: " + String(freq) + " Current: " + currentNote + " Locked: " + lockedNote);
+
   if (freq < 60 || freq > 1000) {
     currentNote = "---";
     tuned = false;
     noteStable = false;
+    Logger::pitch("Frequency out of range");
     return;
   }
 
@@ -124,6 +136,13 @@ void analyze(float freq) {
   float ideal = A4_FREQ * pow(2, (rounded - 69) / 12.0);
   cents = 1200 * log2(freq / ideal);
 
+  // Contador de mudanças de nota para debug
+  if (newNote != currentNote && millis() - lastNoteChangeTime > 1000) {
+    noteChangeCount++;
+    lastNoteChangeTime = millis();
+    Logger::pitch("Note change #" + String(noteChangeCount) + ": " + currentNote + " -> " + newNote);
+  }
+
   // Sistema melhorado de estabilidade
   if (newNote == currentNote) {
     stabilityCounter++;
@@ -135,6 +154,7 @@ void analyze(float freq) {
       currentNote = newNote;
       stabilityCounter = 0;
       noteChangeCounter = 0;
+      Logger::pitch("Note changed to: " + newNote);
     }
   }
 
@@ -143,13 +163,14 @@ void analyze(float freq) {
     lockedNote = currentNote;
     displayNote = lockedNote;
     noteStable = true;
+    Logger::pitch("Note locked: " + lockedNote);
   } else if (currentNote != "---" && stabilityCounter > 1) {
     // Mostra nota detectada mas não confirmada
     displayNote = currentNote;
     noteStable = false;
   }
 
-  tuned = abs(cents) < 5 && noteStable;
+  tuned = fabs(cents) < 5 && noteStable;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -232,6 +253,12 @@ void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
 
+  // 🔥 INICIALIZA SISTEMA DE LOGS
+  Logger::setLevel(LOG_DEBUG); // Mudar para LOG_INFO em produção
+  Logger::info("=== ESP32 Audio Pitch Engine Starting ===");
+  Logger::info("Version: 0.2.1 - Noise Filter + Debug");
+  Logger::info("Activity threshold: 0.35 (increased from 0.25)");
+
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.setTextColor(SSD1306_WHITE);
 display.setTextWrap(false);
@@ -280,7 +307,9 @@ void loop() {
   dynamicMax *= 0.999;
 
   float norm = envelope / dynamicMax;
-  isActive = norm > 0.25;
+  
+  // 🔥 MELHOR FILTRAGEM DE RUÍDO COM NOISEFILTER
+  isActive = noiseFilter.isSignalActive(amp, norm);
 
   // 🔥 DETECÇÃO SIMPLES (FUNCIONA SEM BUG)
   float pitch = detectPitch(sBuffer, samples, 16000);
