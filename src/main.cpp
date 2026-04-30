@@ -352,6 +352,10 @@ display.setTextWrap(false);
   i2s_set_pin(I2S_PORT, &pins);
 }
 
+// ───────── LOOP RATE CONTROL ─────────
+unsigned long lastLoopTime = 0;
+const unsigned long LOOP_RATE_LIMIT = 100; // 10Hz max para output
+
 // ═══════════════════════════════════════════════════════════
 // LOOP
 // ═══════════════════════════════════════════════════════════
@@ -389,10 +393,18 @@ void loop() {
 
   drawUI(pitchFinal);
 
-  Serial.print("Hz:");
-  Serial.print(pitchFinal);
-  Serial.print(" Note:");
-  Serial.print(currentNote);
-  Serial.print(" cents:");
-  Serial.println(cents);
+  // 🔥 OUTPUT CONTROLADO COM RATE LIMITING
+  unsigned long currentTime = millis();
+  if (currentTime - lastLoopTime >= LOOP_RATE_LIMIT) {
+    // Só mostrar Hz se tiver pitch válido
+    if (pitchFinal > 0 && isActive) {
+      String output = "Hz:" + String((int)pitchFinal) + 
+                       " Note:" + currentNote + 
+                       " cents:" + String((int)cents);
+      Logger::info(output);
+    } else if (!isActive) {
+      Logger::info("Signal inactive - Hz:--- Note:---");
+    }
+    lastLoopTime = currentTime;
+  }
 }
