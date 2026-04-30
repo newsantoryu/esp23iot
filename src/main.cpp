@@ -21,7 +21,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define I2S_SCK 26
 
 #define I2S_PORT I2S_NUM_0
-#define BUFFER_LEN 256
+#define BUFFER_LEN 1024  // 🔥 AUMENTADO para maior precisão
 #define A4_FREQ 432.0
 
 int32_t sBuffer[BUFFER_LEN];
@@ -59,8 +59,9 @@ String currentNote = "---";
 String lockedNote  = "---";
 int stabilityCounter = 0;
 int noteChangeCounter = 0;
-const int NOTE_STABILITY_THRESHOLD = 5; // mais exigente
-const int NOTE_CHANGE_THRESHOLD = 3; // histerese para mudanças
+const int NOTE_STABILITY_THRESHOLD = 12; // Mais exigente para estabilidade
+const int NOTE_CHANGE_THRESHOLD = 8;     // Mais histerese para mudanças
+const unsigned long NOTE_COOLDOWN = 500;  // Cooldown entre mudanças
 
 // ───────── DEBUG MODE ─────────
 bool debugMode = false;
@@ -77,21 +78,42 @@ const char* noteNames[] = {
   "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"
 };
 
+// ───────── FILTRO PASSA-BAIXA ─────────
+float lowPassFilter(float input, float cutoff, float sampleRate) {
+  static float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  
+  float RC = 1.0 / (2 * 3.14159 * cutoff);
+  float dt = 1.0 / sampleRate;
+  float alpha = dt / (RC + dt);
+  
+  y2 = y1 + alpha * (input - y1);
+  y1 = y2;
+  
+  return y1;
+}
+
 // ═══════════════════════════════════════════════════════════
 // 🎯 ZERO CROSS COM VALIDAÇÃO ROBUSTA
 // ═══════════════════════════════════════════════════════════
 float detectPitch(int32_t* buffer, int len, int sampleRate) {
+
+  // 🔥 APLICAR FILTRO PASSA-BAIXA
+  float filteredBuffer[len];
+  for (int i = 0; i < len; i++) {
+    int16_t sample = buffer[i] >> 16;
+    filteredBuffer[i] = lowPassFilter((float)sample, 800.0, sampleRate);
+  }
 
   int crossings = 0;
   long signalSum = 0;
   long signalSquared = 0;
 
   for (int i = 1; i < len; i++) {
-    int16_t a = buffer[i-1] >> 16;
-    int16_t b = buffer[i] >> 16;
+    float a = filteredBuffer[i-1];
+    float b = filteredBuffer[i];
     
     // Acumular estatísticas do sinal
-    signalSum += abs(a);
+    signalSum += fabs(a);
     signalSquared += (long)a * a;
 
     // Zero cross detection
@@ -228,6 +250,13 @@ void analyze(float freq) {
     Logger::pitch("Note change #" + String(noteChangeCount) + ": " + currentNote + " -> " + newNote);
   }
 
+  // 🔥 COOLDOWN ENTRE MUDANÇAS
+  static unsigned long lastNoteChange = 0;
+  if (newNote != currentNote && (millis() - lastNoteChange) < NOTE_COOLDOWN) {
+    Logger::pitch("Note change blocked by cooldown: " + newNote);
+    return; // Bloquear mudança muito rápida
+  }
+
   // Sistema melhorado de estabilidade
   if (newNote == currentNote) {
     stabilityCounter++;
@@ -239,6 +268,7 @@ void analyze(float freq) {
       currentNote = newNote;
       stabilityCounter = 0;
       noteChangeCounter = 0;
+      lastNoteChange = millis(); // 🔥 Registrar mudança
       Logger::pitch("Note changed to: " + newNote);
     }
   }
