@@ -43,6 +43,9 @@ int pitchIndex = 0;
 float cents = 0;
 bool tuned = false;
 
+// ───────── NOTE WITH OCTAVE ─────────
+String displayNoteWithOctave = "---";
+
 // ───────── PITCH VALIDATION ─────────
 float lastValidPitch = 0;
 unsigned long lastValidPitchTime = 0;
@@ -161,6 +164,7 @@ void analyze(float freq) {
       currentNote = "---";
       lockedNote = "---";
       displayNote = "---";
+      displayNoteWithOctave = "---";  // Resetar nota com oitava
       noteStable = false;
       tuned = false;
       stabilityCounter = 0;
@@ -176,6 +180,7 @@ void analyze(float freq) {
   if (freq < MIN_PITCH_FREQ || freq > MAX_PITCH_FREQ) {
     Logger::pitch("Frequency out of valid range: " + String(freq));
     currentNote = "---";
+    displayNoteWithOctave = "---";  // Resetar nota com oitava
     tuned = false;
     noteStable = false;
     return;
@@ -200,6 +205,11 @@ void analyze(float freq) {
 
   int idx = (rounded % 12 + 12) % 12;
   String newNote = noteNames[idx];
+
+  // 🔥 CÁLCULO DA OITAVA
+  int octave = (rounded / 12) - 1;  // A4=69 → (69/12)-1=4
+  String noteWithOctave = newNote + String(octave);  // "A4", "C3", "G5"
+  displayNoteWithOctave = noteWithOctave;
 
   float ideal = A4_FREQ * pow(2, (rounded - 69) / 12.0);
   cents = 1200 * log2(freq / ideal);
@@ -237,11 +247,13 @@ void analyze(float freq) {
   if (stabilityCounter >= NOTE_STABILITY_THRESHOLD) {
     lockedNote = currentNote;
     displayNote = lockedNote;
+    displayNoteWithOctave = noteWithOctave;  // Atualizar nota com oitava
     noteStable = true;
-    Logger::pitch("Note locked: " + lockedNote);
+    Logger::pitch("Note locked: " + lockedNote + " (" + noteWithOctave + ")");
   } else if (currentNote != "---" && stabilityCounter > 1) {
     // Mostra nota detectada mas não confirmada
     displayNote = currentNote;
+    displayNoteWithOctave = noteWithOctave;  // Atualizar nota com oitava
     noteStable = false;
   }
 
@@ -289,19 +301,27 @@ void drawUI(float norm) {
     display.print("---");
   }
 
-  // ───────── NOTA GRANDE CENTRAL ─────────
+  // ───────── NOTA GRANDE CENTRAL COM OITAVA ─────────
   display.setTextSize(3);
   display.setCursor(34, 14);
 
-  if (displayNote != "---" && isActive) {
+  if (displayNoteWithOctave != "---" && isActive) {
     // Indicador visual de estabilidade
     if (noteStable) {
-      display.print(displayNote); // Nota estável
+      // Ajustar tamanho se "A4" não couber
+      if (displayNoteWithOctave.length() <= 2) {
+        display.print(displayNoteWithOctave); // "A4", "C3", etc.
+      } else {
+        // Nota com oitava longa - reduzir tamanho
+        display.setTextSize(2);
+        display.setCursor(24, 18);
+        display.print(displayNoteWithOctave);
+      }
     } else {
       // Nota detectada mas não estável - mostra menor
       display.setTextSize(2);
       display.setCursor(44, 18);
-      display.print(displayNote);
+      display.print(displayNoteWithOctave);
     }
   } else {
     display.print("--");
