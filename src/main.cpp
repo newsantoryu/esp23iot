@@ -1,383 +1,301 @@
+// ═══════════════════════════════════════════════════════════
+// 🎯 ESP32 TUNER — HYBRID PRO (FIX DISPLAY + DEBUG)
+// ═══════════════════════════════════════════════════════════
+
 #include <Arduino.h>
 #include <driver/i2s.h>
 #include <math.h>
-#include <WiFi.h>
-#include <WiFiUdp.h>
-#include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define BUTTON_PIN 27
-
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// ═══════════════════════════════════════════════════════════
-//  REDE — WiFi + UDP para envio de estado ao Unity
-// ═══════════════════════════════════════════════════════════
-const char* WIFI_SSID     = "Victor - 2.4G-EXT";
-const char* WIFI_PASSWORD = "07110589";
-const char* PC_IP         = "192.168.15.65";
-const int   UDP_PORT      = 9000;
+// ───────── PINOS ─────────
+#define LED_PIN 14
+#define I2S_WS  25
+#define I2S_SD  34
+#define I2S_SCK 26
 
-WiFiUDP udp;
-
-// ═══════════════════════════════════════════════════════════
-//  PINAGEM
-// ═══════════════════════════════════════════════════════════
-#define I2S_WS   25   // Word Select (LRCLK)
-#define I2S_SD   34   // Serial Data (DOUT do mic)
-#define I2S_SCK  26   // Bit Clock (BCLK)
-#define LED_PIN  14   // LED indicador de atividade de voz
-
-#define I2S_PORT   I2S_NUM_0
-#define BUFFER_LEN 64  // 64 amostras x 4 bytes = 256 bytes por leitura
+#define I2S_PORT I2S_NUM_0
+#define BUFFER_LEN 256
+#define A4_FREQ 432.0
 
 int32_t sBuffer[BUFFER_LEN];
+float yinBuffer[BUFFER_LEN/2];
 
-// ═══════════════════════════════════════════════════════════
-//  ENVELOPE — suavização da amplitude bruta
-//  alpha: 0.0 = lentíssimo | 1.0 = sem suavização
-// ═══════════════════════════════════════════════════════════
+// ───────── AUDIO ─────────
 float envelope = 0;
-float alpha    = 0.15;
+float alpha = 0.1;
+float dynamicMax = 100;
+bool isActive = false;
+
+// ───────── PITCH ─────────
+float pitchFinal = 0;
+float pitchHistory[5];
+int pitchIndex = 0;
+
+float cents = 0;
+bool tuned = false;
+
+// ───────── DISPLAY ESTABILITY ─────────
+unsigned long lastDisplayUpdate = 0;
+const unsigned long DISPLAY_UPDATE_INTERVAL = 100; // 10Hz max
+String displayNote = "---";
+bool noteStable = false;
+
+// ───────── NOTE ─────────
+String currentNote = "---";
+String lockedNote  = "---";
+int stabilityCounter = 0;
+int noteChangeCounter = 0;
+const int NOTE_STABILITY_THRESHOLD = 5; // mais exigente
+const int NOTE_CHANGE_THRESHOLD = 3; // histerese para mudanças
+
+const char* noteNames[] = {
+  "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"
+};
 
 // ═══════════════════════════════════════════════════════════
-//  NOISE FLOOR ADAPTATIVO
-//  alphaDown: velocidade de queda em silêncio (lento)
-//  alphaUp:   velocidade de subida com ruído ambiente (lento)
-//
-//  CONGELADO enquanto voz estiver ativa — impede que o
-//  noise floor suba junto com a voz e zere o sinal durante
-//  notas sustentadas ou fala contínua
+// 🎯 ZERO CROSS (estável e leve)
 // ═══════════════════════════════════════════════════════════
-float noiseFloor     = 5.0;
-float noiseAlphaDown = 0.001;
-float noiseAlphaUp   = 0.005;
+float detectPitch(int32_t* buffer, int len, int sampleRate) {
 
-// ═══════════════════════════════════════════════════════════
-//  DYNAMIC MAX — normaliza o sinal para 0.0~1.0
-//  Decai 0.05%/ciclo para se adaptar ao volume do ambiente
-//  Congelado junto com noise floor durante voz ativa
-// ═══════════════════════════════════════════════════════════
-float dynamicMax = 100.0;
+  int crossings = 0;
 
-// ═══════════════════════════════════════════════════════════
-//  DETECTOR DE VOZ — hangover de silêncio
-//
-//  Comportamento:
-//    - LED acende assim que norm > thresholdOn
-//    - LED SÓ apaga após SILENCE_HANGOVER ms de silêncio
-//      contínuo (norm < thresholdOff por todo esse período)
-//    - Durante voz ativa, lastVoiceMs é renovado a cada
-//      ciclo — o LED nunca pisca no meio de uma fala
-// ═══════════════════════════════════════════════════════════
-bool  isActive         = false;
-float thresholdOn      = 0.50;
-float thresholdOff     = 0.15;
+  for (int i = 1; i < len; i++) {
+    int16_t a = buffer[i-1] >> 16;
+    int16_t b = buffer[i] >> 16;
 
-unsigned long lastVoiceMs      = 0;
-const int     SILENCE_HANGOVER = 1500;
-
-// ═══════════════════════════════════════════════════════════
-//  CALIBRAÇÃO INICIAL — aprende o noise floor do ambiente
-//  durante os primeiros CALIB_MS ms em silêncio
-// ═══════════════════════════════════════════════════════════
-bool          calibrating = true;
-unsigned long startMs     = 0;
-const int     CALIB_MS    = 2000;
-
-// ═══════════════════════════════════════════════════════════
-//  DEBUG + UDP
-// ═══════════════════════════════════════════════════════════
-unsigned long lastPrint = 0;
-const int     PRINT_MS  = 100;  // 10x por segundo
-
-bool lastState = HIGH;
-
-
-// ── Barra visual sem alocação dinâmica ──────────────────────
-void printBar(float v, int width = 20) {
-  int filled = constrain((int)(v * width), 0, width);
-  Serial.print("[");
-  for (int i = 0; i < width; i++) Serial.print(i < filled ? "#" : "-");
-  Serial.print("]");
-}
-
-// ── Conecta WiFi ────────────────────────────────────────────
-void setupWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  Serial.print("[WiFi] Conectando");
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-
-    if (attempts > 30) {
-      Serial.println("\n[WiFi] Timeout — reiniciando tentativa...");
-      WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-      attempts = 0;
+    if ((a < 0 && b >= 0) || (a > 0 && b <= 0)) {
+      crossings++;
     }
   }
 
-  Serial.println("\n[WiFi] ✅ CONECTADO");
-  Serial.print("[WiFi] IP ESP32: ");
-  Serial.println(WiFi.localIP());
+  if (crossings < 6) return 0;
 
-  udp.begin(UDP_PORT);
+  float freq = (crossings * sampleRate) / (2.0 * len);
 
-  Serial.print("[UDP] DESTINO: ");
-  Serial.print(PC_IP);
-  Serial.print(":");
-  Serial.println(UDP_PORT);
+  if (freq < 60 || freq > 1000) return 0;
+
+  return freq;
 }
 
-// ── Envia estado via UDP para o Unity ───────────────────────
-// JSON: {"state":"VOZ","norm":0.85,"amplitude":320.0,"noiseFloor":35.0}
-void sendUDP(float norm, float amplitude, float nFloor, bool active) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[UDP] ⚠ WiFi OFF — pacote não enviado");
+// ═══════════════════════════════════════════════════════════
+// 🎯 SMOOTH
+// ═══════════════════════════════════════════════════════════
+float smooth(float v) {
+
+  pitchHistory[pitchIndex] = v;
+  pitchIndex = (pitchIndex + 1) % 5;
+
+  float sum = 0;
+  int count = 0;
+
+  for (int i = 0; i < 5; i++) {
+    if (pitchHistory[i] > 0) {
+      sum += pitchHistory[i];
+      count++;
+    }
+  }
+
+  return count ? sum / count : 0;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 🎯 ANALISE (NUNCA FICA SEM NOTA)
+// ═══════════════════════════════════════════════════════════
+void analyze(float freq) {
+
+  if (freq < 60 || freq > 1000) {
+    currentNote = "---";
+    tuned = false;
+    noteStable = false;
     return;
   }
 
-  StaticJsonDocument<128> doc;
-  doc["state"]      = active ? "VOZ" : "SILENCIO";
-  doc["norm"]       = norm;
-  doc["amplitude"]  = amplitude;
-  doc["noiseFloor"] = nFloor;
+  float note = 69 + 12 * log2(freq / A4_FREQ);
+  int rounded = round(note);
 
-  char buffer[128];
-  serializeJson(doc, buffer);
+  int idx = (rounded % 12 + 12) % 12;
+  String newNote = noteNames[idx];
 
-  udp.beginPacket(PC_IP, UDP_PORT);
-  udp.write((uint8_t*)buffer, strlen(buffer));
+  float ideal = A4_FREQ * pow(2, (rounded - 69) / 12.0);
+  cents = 1200 * log2(freq / ideal);
 
-  bool success = udp.endPacket();
-
-  if (!success) {
-    Serial.println("[UDP] ❌ ERRO ao enviar pacote");
+  // Sistema melhorado de estabilidade
+  if (newNote == currentNote) {
+    stabilityCounter++;
+    noteChangeCounter = 0;
   } else {
-    Serial.print("[UDP] ✔ enviado -> ");
-    Serial.println(buffer);
-  }
-}
-
-void updateDisplay(float volumeNorm, bool falando) {
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  
-  // Status do WiFi
-  display.printf("WiFi: %s\n", (WiFi.status() == WL_CONNECTED ? "OK" : "Erro"));
-  
-  // Status da Voz
-  display.setCursor(0, 15);
-  display.setTextSize(1);
-  display.print("Status: ");
-  if (falando) {
-    display.setTextSize(2);
-    display.println("FALANDO");
-  } else {
-    display.println("Silencio");
-  }
-
-  // Barra de Volume (Gráfico)
-  display.setTextSize(1);
-  int barWidth = map(volumeNorm * 100, 0, 100, 0, 128); 
-  display.drawRect(0, 50, 128, 10, SSD1306_WHITE); // Borda da barra
-  display.fillRect(0, 50, barWidth, 10, SSD1306_WHITE); // Preenchimento
-  
-  display.display();
-}
-
-
-  void desenhaOLED(float volumeNorm, bool falando) {
-  display.clearDisplay();
-
-  // --- PARTE AMARELA (Topo) ---
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.print("WiFi: "); display.println(WiFi.status() == WL_CONNECTED ? "ON" : "OFF");
-  
-  // --- PARTE AZUL (Baixo) ---
-  display.setCursor(0, 20);
-  display.print("VOZ: ");
-  if (falando) {
-    display.println(">>> ATIVA <<<");
-  } else {
-    display.println("---      ---");
-  }
-
-  // Desenha uma barra de volume horizontal
-  int larguraBarra = constrain((int)(volumeNorm * 128), 0, 128);
-  display.drawRect(0, 45, 128, 15, SSD1306_WHITE); // Moldura
-  display.fillRect(0, 45, larguraBarra, 15, SSD1306_WHITE); // Volume
-
-  display.display();
-}
-
-// ════════════════════════════════════════════════════════════
-//  SETUP
-// ════════════════════════════════════════════════════════════
-void setup() {  
-  Serial.begin(115200);
-  delay(2000);
-  Serial.println("╔══════════════════════════════╗");
-  Serial.println("║     VAD — ESP32 + INMP441    ║");
-  Serial.println("╚══════════════════════════════╝");
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  // ── WiFi + UDP ───────────────────────────────────────────
-  setupWiFi();
-    // Inicializa o OLED no endereço 0x3C
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("OLED falhou"));
-  } else {
-    Wire.setClock(400000);
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0,0);
-    display.println("Sistema Iniciado");
-    display.display();
-  }
-
-
-  // ── Configuração I2S ─────────────────────────────────────
-  // INMP441: 32 bits por amostra, canal RIGHT (L/R = 3.3V)
-  // sample_rate 16kHz suficiente para detecção de voz
-  i2s_config_t i2s_config = {
-    .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate          = 16000,
-    .bits_per_sample      = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format       = I2S_CHANNEL_FMT_ONLY_RIGHT,
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count        = 4,
-    .dma_buf_len          = 64,
-    .use_apll             = false
-  };
-
-  i2s_pin_config_t pin_config = {
-    .bck_io_num   = I2S_SCK,
-    .ws_io_num    = I2S_WS,
-    .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num  = I2S_SD
-  };
-
-  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
-  i2s_set_pin(I2S_PORT, &pin_config);
-
-  startMs = millis();
-  Serial.println("[CALIB] Fique em silencio por 2s...");
-}
-
-// ════════════════════════════════════════════════════════════
-//  LOOP
-// ════════════════════════════════════════════════════════════
-void loop() {
-bool current = digitalRead(BUTTON_PIN);
-
-  if (current != lastState) {
-    if (current == LOW) {
-      Serial.println("PRESSIONADO");
-    } else {
-      Serial.println("SOLTO");
+    noteChangeCounter++;
+    // Só muda se tiver histerese suficiente
+    if (noteChangeCounter >= NOTE_CHANGE_THRESHOLD) {
+      currentNote = newNote;
+      stabilityCounter = 0;
+      noteChangeCounter = 0;
     }
-    lastState = current;
   }
 
-  // 🔥 AUTO-RECONNECT WiFi
-if (WiFi.status() != WL_CONNECTED) {
-  static unsigned long lastReconnect = 0;
-
-  if (millis() - lastReconnect > 3000) {
-    Serial.println("[WiFi] Reconectando...");
-    WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    lastReconnect = millis();
+  // Nota considerada estável apenas após threshold maior
+  if (stabilityCounter >= NOTE_STABILITY_THRESHOLD) {
+    lockedNote = currentNote;
+    displayNote = lockedNote;
+    noteStable = true;
+  } else if (currentNote != "---" && stabilityCounter > 1) {
+    // Mostra nota detectada mas não confirmada
+    displayNote = currentNote;
+    noteStable = false;
   }
+
+  tuned = abs(cents) < 5 && noteStable;
 }
+
+// ═══════════════════════════════════════════════════════════
+// 🎯 UI FIXADA (SEMPRE VISÍVEL)
+// ═══════════════════════════════════════════════════════════
+void drawUI(float norm) {
+
+  // Controle de taxa de atualização
+  unsigned long currentTime = millis();
+  if (currentTime - lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) {
+    return; // Pula atualização se muito rápido
+  }
+  lastDisplayUpdate = currentTime;
+
+  display.clearDisplay();
+
+  // ───────── LINHA 1 (INFO COMPACTA) ─────────
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+
+  display.print("Hz:");
+  display.print((int)pitchFinal);
+
+  display.setCursor(64, 0);
+  display.print("Nt:");
+  display.print(displayNote);
+
+  // ───────── NOTA GRANDE CENTRAL ─────────
+  display.setTextSize(3);
+  display.setCursor(34, 14);
+
+  if (displayNote != "---") {
+    // Indicador visual de estabilidade
+    if (noteStable) {
+      display.print(displayNote); // Nota estável
+    } else {
+      // Nota detectada mas não estável - mostra menor
+      display.setTextSize(2);
+      display.setCursor(44, 18);
+      display.print(displayNote);
+    }
+  } else {
+    display.print("--");
+  }
+
+  // ───────── STATUS MELHORADO ─────────
+  display.setTextSize(1);
+  display.setCursor(0, 44);
+
+  if (!isActive) {
+    display.print("."); // Idle
+  } else if (tuned) {
+    display.print("OK"); // Afinação perfeita
+  } else if (cents > 0) {
+    display.print("DN"); // Desce
+  } else {
+    display.print("UP"); // Sobe
+  }
+
+  // ───────── CENTS + INDICADOR DE ESTABILIDADE ─────────
+  display.setCursor(90, 44);
+  if (noteStable) {
+    display.printf("%+d", (int)cents);
+  } else {
+    display.print("~"); // Indicador de instabilidade
+  }
+
+  // ───────── BARRA DE VOLUME ─────────
+  int bar = norm * 128;
+  display.drawRect(0, 58, 128, 4, SSD1306_WHITE);
+  display.fillRect(0, 58, bar, 4, SSD1306_WHITE);
+
+  display.display();
+}
+// ═══════════════════════════════════════════════════════════
+// SETUP
+// ═══════════════════════════════════════════════════════════
+void setup() {
+
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  display.setTextColor(SSD1306_WHITE);
+display.setTextWrap(false);
+
+  i2s_config_t config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_RIGHT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .dma_buf_count = 4,
+    .dma_buf_len = 128
+  };
+
+  i2s_pin_config_t pins = {
+    .bck_io_num = I2S_SCK,
+    .ws_io_num = I2S_WS,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD
+  };
+
+  i2s_driver_install(I2S_PORT, &config, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pins);
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOOP
+// ═══════════════════════════════════════════════════════════
+void loop() {
 
   size_t bytesIn = 0;
-  i2s_read(I2S_PORT, (void*)sBuffer, sizeof(sBuffer), &bytesIn, portMAX_DELAY);
-  if (bytesIn == 0) return;
+  i2s_read(I2S_PORT, sBuffer, sizeof(sBuffer), &bytesIn, portMAX_DELAY);
 
-  // ── 1. Amplitude média absoluta (MAE) ───────────────────
-  // shift >>16: descarta os 16 LSBs de ruído do INMP441
-  int  samples = bytesIn / sizeof(int32_t);
-  long sum     = 0;
+  int samples = bytesIn / sizeof(int32_t);
+  if (samples == 0) return;
+
+  long sum = 0;
   for (int i = 0; i < samples; i++) {
-    int32_t v = sBuffer[i] >> 16;
-    sum += abs(v);
-  }
-  float amplitude = (float)sum / samples;
-
-  // ── 2. Envelope exponencial ─────────────────────────────
-  envelope += alpha * (amplitude - envelope);
-
-  // ── 3. Calibração inicial ───────────────────────────────
-  if (calibrating) {
-    noiseFloor += 0.05 * (envelope - noiseFloor);
-    if (millis() - startMs > CALIB_MS) {
-      calibrating = false;
-      dynamicMax  = noiseFloor * 5.0;
-      Serial.print("[PRONTO] noiseFloor=");
-      Serial.print(noiseFloor, 1);
-      Serial.print(" dynamicMax=");
-      Serial.println(dynamicMax, 1);
-    }
-    return;
+    sum += abs(sBuffer[i] >> 16);
   }
 
-  // ── 4. Noise floor adaptativo — CONGELADO durante voz ───
-  if (!isActive) {
-    if (envelope > noiseFloor)
-      noiseFloor += noiseAlphaUp   * (envelope - noiseFloor);
-    else
-      noiseFloor += noiseAlphaDown * (envelope - noiseFloor);
+  float amp = (float)sum / samples;
+  envelope += alpha * (amp - envelope);
 
-    if (dynamicMax < noiseFloor * 2) dynamicMax = noiseFloor * 2;
-  }
+  if (envelope > dynamicMax) dynamicMax = envelope;
+  dynamicMax *= 0.999;
 
-  // ── 5. Sinal limpo + normalização ───────────────────────
-  float signal = max(0.0f, envelope - noiseFloor);
+  float norm = envelope / dynamicMax;
+  isActive = norm > 0.25;
 
-  if (signal > dynamicMax) dynamicMax = signal;
-  dynamicMax *= 0.9995;
+  // 🔥 DETECÇÃO SIMPLES (FUNCIONA SEM BUG)
+  float pitch = detectPitch(sBuffer, samples, 16000);
+  pitchFinal = smooth(pitch);
 
-  float norm = constrain(signal / dynamicMax, 0.0f, 1.0f);
+  analyze(pitchFinal);
 
-  // ── 6. Detecção com hangover de silêncio ────────────────
-  if (norm > thresholdOn) {
-    lastVoiceMs = millis();
-    isActive    = true;
-  }
-  if (isActive && norm < thresholdOff && millis() - lastVoiceMs > SILENCE_HANGOVER) {
-    isActive = false;
-  }
+  digitalWrite(LED_PIN, tuned && isActive);
 
-  digitalWrite(LED_PIN, isActive);
+  drawUI(pitchFinal);
 
-  // ── 7. Debug + UDP ───────────────────────────────────────
-  if (millis() - lastPrint > PRINT_MS) {
-    // Atualiza o display com os dados do algoritmo VAD
-    desenhaOLED(envelope / dynamicMax, isActive);
-    Serial.print("AMP:"); Serial.print(amplitude, 1);
-    Serial.print(" ENV:"); Serial.print(envelope,  1);
-    Serial.print(" NSE:"); Serial.print(noiseFloor, 1);
-    Serial.print(" SIG:"); Serial.print(signal,    1);
-    Serial.print(" NRM:"); Serial.print(norm,      2);
-    Serial.print(" "); printBar(norm);
-    Serial.print(" "); Serial.println(isActive ? ">>> VOZ" : "    SILENCIO");
-
-    // Envia estado para Unity via UDP
-    sendUDP(norm, amplitude, noiseFloor, isActive);
-
-    lastPrint = millis();
-  }
+  Serial.print("Hz:");
+  Serial.print(pitchFinal);
+  Serial.print(" Note:");
+  Serial.print(currentNote);
+  Serial.print(" cents:");
+  Serial.println(cents);
 }
