@@ -5,6 +5,9 @@ NoiseFilter::NoiseFilter() {
     for (int i = 0; i < AMP_HISTORY_SIZE; i++) {
         ampHistory[i] = 0;
     }
+    // Thresholds mais rigorosos para rejeitar ruído
+    activityThreshold = 0.40;  // Aumentado de 0.35 para 0.40
+    hysteresis = 0.08;         // Aumentado de 0.05 para 0.08
 }
 
 bool NoiseFilter::isSignalActive(float amplitude, float normalized) {
@@ -18,7 +21,17 @@ bool NoiseFilter::isSignalActive(float amplitude, float normalized) {
     // Obtém amplitude média filtrada
     float filteredAmp = getAverageAmplitude();
     
-    // Aplica threshold com histerese
+    // Validação adicional: rejeitar se amplitude muito baixa
+    if (filteredAmp < 5.0) {
+        Logger::audio("Very low amplitude - rejecting: " + String(filteredAmp));
+        if (currentState) {
+            currentState = false; // Forçar inativo
+            Logger::audio("Forced inactive due to low amplitude");
+        }
+        return false;
+    }
+    
+    // Aplica threshold com histerese mais rigorosa
     bool shouldBeActive = normalized > activityThreshold;
     
     if (shouldBeActive != currentState) {
@@ -28,13 +41,19 @@ bool NoiseFilter::isSignalActive(float amplitude, float normalized) {
         } else {
             currentState = normalized < (activityThreshold - hysteresis);
         }
+        
+        Logger::audio("State change: " + String(shouldBeActive ? "ACTIVE" : "INACTIVE") + 
+                      " Norm: " + String(normalized) + 
+                      " Threshold: " + String(activityThreshold) +
+                      " Hysteresis: " + String(hysteresis));
     }
     
     Logger::audio("Amp: " + String(amplitude) + 
                   " Norm: " + String(normalized) + 
                   " Filtered: " + String(filteredAmp) + 
                   " Active: " + String(currentState ? "YES" : "NO") +
-                  " NoiseFloor: " + String(noiseFloor));
+                  " NoiseFloor: " + String(noiseFloor) +
+                  " Thresh: " + String(activityThreshold));
     
     return currentState;
 }

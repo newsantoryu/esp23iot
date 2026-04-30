@@ -43,6 +43,14 @@ int pitchIndex = 0;
 float cents = 0;
 bool tuned = false;
 
+// ───────── PITCH VALIDATION ─────────
+float lastValidPitch = 0;
+unsigned long lastValidPitchTime = 0;
+const float MIN_PITCH_FREQ = 80.0;   // Frequência mínima válida
+const float MAX_PITCH_FREQ = 800.0;  // Frequência máxima válida
+const float PITCH_COHERENCE_TOLERANCE = 0.3; // 30% tolerância
+const unsigned long PITCH_TIMEOUT = 2000; // 2s timeout
+
 // ───────── NOTE ─────────
 String currentNote = "---";
 String lockedNote  = "---";
@@ -67,27 +75,52 @@ const char* noteNames[] = {
 };
 
 // ═══════════════════════════════════════════════════════════
-// 🎯 ZERO CROSS (estável e leve)
+// 🎯 ZERO CROSS COM VALIDAÇÃO ROBUSTA
 // ═══════════════════════════════════════════════════════════
 float detectPitch(int32_t* buffer, int len, int sampleRate) {
 
   int crossings = 0;
+  long signalSum = 0;
+  long signalSquared = 0;
 
   for (int i = 1; i < len; i++) {
     int16_t a = buffer[i-1] >> 16;
     int16_t b = buffer[i] >> 16;
+    
+    // Acumular estatísticas do sinal
+    signalSum += abs(a);
+    signalSquared += (long)a * a;
 
+    // Zero cross detection
     if ((a < 0 && b >= 0) || (a > 0 && b <= 0)) {
       crossings++;
     }
   }
 
+  // Validação mínima de crossings
   if (crossings < 6) return 0;
 
+  // Calcular frequência
   float freq = (crossings * sampleRate) / (2.0 * len);
 
-  if (freq < 60 || freq > 1000) return 0;
+  // Filtrar frequências inválidas
+  if (freq < MIN_PITCH_FREQ || freq > MAX_PITCH_FREQ) {
+    Logger::pitch("Pitch out of range: " + String(freq));
+    return 0;
+  }
 
+  // Calcular SNR simples
+  float avgSignal = (float)signalSum / len;
+  float avgPower = (float)signalSquared / len;
+  float snr = (avgPower > 0) ? (avgSignal * avgSignal) / avgPower : 0;
+  
+  // Rejeitar se SNR muito baixo (ruído)
+  if (snr < 0.01) {
+    Logger::pitch("Low SNR pitch rejected: " + String(freq) + " SNR:" + String(snr));
+    return 0;
+  }
+
+  Logger::pitch("Valid pitch: " + String(freq) + " SNR:" + String(snr));
   return freq;
 }
 
@@ -115,17 +148,52 @@ float smooth(float v) {
 // ═══════════════════════════════════════════════════════════
 // 🎯 ANALISE (NUNCA FICA SEM NOTA)
 // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// 🎯 ANALISE COM BLOQUEIO DE RUÍDO
+// ═══════════════════════════════════════════════════════════
 void analyze(float freq) {
+
+  // 🔥 BLOQUEIO CRÍTICO: Não analisar se sinal inativo
+  if (!isActive) {
+    Logger::pitch("Signal inactive - blocking analysis");
+    // Resetar estado apenas se estava ativo antes
+    if (currentNote != "---") {
+      currentNote = "---";
+      lockedNote = "---";
+      displayNote = "---";
+      noteStable = false;
+      tuned = false;
+      stabilityCounter = 0;
+      noteChangeCounter = 0;
+      Logger::pitch("Reset state due to inactivity");
+    }
+    return;
+  }
 
   Logger::pitch("Freq: " + String(freq) + " Current: " + currentNote + " Locked: " + lockedNote);
 
-  if (freq < 60 || freq > 1000) {
+  // Validação de frequência
+  if (freq < MIN_PITCH_FREQ || freq > MAX_PITCH_FREQ) {
+    Logger::pitch("Frequency out of valid range: " + String(freq));
     currentNote = "---";
     tuned = false;
     noteStable = false;
-    Logger::pitch("Frequency out of range");
     return;
   }
+
+  // Verificação de coerência com último pitch válido
+  unsigned long currentTime = millis();
+  if (lastValidPitch > 0 && (currentTime - lastValidPitchTime) < PITCH_TIMEOUT) {
+    float coherence = fabs(freq - lastValidPitch) / lastValidPitch;
+    if (coherence > PITCH_COHERENCE_TOLERANCE) {
+      Logger::pitch("Incoherent pitch rejected: " + String(freq) + " Coherence:" + String(coherence));
+      return; // Rejeitar pitch incoerente
+    }
+  }
+
+  // Atualizar último pitch válido
+  lastValidPitch = freq;
+  lastValidPitchTime = currentTime;
 
   float note = 69 + 12 * log2(freq / A4_FREQ);
   int rounded = round(note);
