@@ -23,10 +23,8 @@ bool NoiseFilter::isSignalActive(float amplitude, float normalized) {
     
     // Validação adicional: rejeitar se amplitude muito baixa
     if (filteredAmp < 5.0) {
-        Logger::audio("Very low amplitude - rejecting: " + String(filteredAmp));
         if (currentState) {
             currentState = false; // Forçar inativo
-            Logger::audio("Forced inactive due to low amplitude");
         }
         return false;
     }
@@ -42,18 +40,18 @@ bool NoiseFilter::isSignalActive(float amplitude, float normalized) {
             currentState = normalized < (activityThreshold - hysteresis);
         }
         
-        Logger::audio("State change: " + String(shouldBeActive ? "ACTIVE" : "INACTIVE") + 
-                      " Norm: " + String(normalized) + 
-                      " Threshold: " + String(activityThreshold) +
-                      " Hysteresis: " + String(hysteresis));
+        Logger::audio("State change: " + String(shouldBeActive ? "ACTIVE" : "INACTIVE"));
     }
     
-    Logger::audio("Amp: " + String(amplitude) + 
-                  " Norm: " + String(normalized) + 
-                  " Filtered: " + String(filteredAmp) + 
-                  " Active: " + String(currentState ? "YES" : "NO") +
-                  " NoiseFloor: " + String(noiseFloor) +
-                  " Thresh: " + String(activityThreshold));
+    // Log apenas a cada segundo para reduzir spam
+    static unsigned long lastAudioLog = 0;
+    unsigned long now = millis();
+    if (now - lastAudioLog > 1000) {
+        Logger::audio("Amp: " + String(amplitude) + 
+                      " Norm: " + String(normalized) + 
+                      " Active: " + String(currentState ? "YES" : "NO"));
+        lastAudioLog = now;
+    }
     
     return currentState;
 }

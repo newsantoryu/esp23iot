@@ -322,7 +322,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
 
   // 🔥 INICIALIZA SISTEMA DE LOGS
-  Logger::setLevel(LOG_DEBUG); // Mudar para LOG_INFO em produção
+  Logger::setLevel(LOG_INFO); // Nível de produção para reduzir spam
   Logger::info("=== ESP32 Audio Pitch Engine Starting ===");
   Logger::info("Version: 0.2.1 - Noise Filter + Debug");
   Logger::info("Activity threshold: 0.35 (increased from 0.25)");

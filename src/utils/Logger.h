@@ -21,8 +21,11 @@ public:
 private:
     static LogLevel currentLevel;
     static unsigned long lastLogTime;
-    static const unsigned long LOG_RATE_LIMIT = 50; // ms between logs
+    static const unsigned long LOG_RATE_LIMIT = 200; // 200ms = 5 logs/segundo global
+    static unsigned long logCount;
+    static unsigned long lastSecondTime;
     
     static void log(LogLevel level, const String& prefix, const String& message);
     static bool shouldLog();
+    static void updateLogStats();
 };
