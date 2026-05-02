@@ -7,8 +7,11 @@
 #include <math.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WiFi.h>
 #include "utils/Logger.h"
 #include "utils/NoiseFilter.h"
+#include "interfaces/WiFiStreamer.h"
+#include "utils/DebugDashboard.h"
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -24,6 +27,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define BUFFER_LEN 1024  // 🔥 AUMENTADO para maior precisão
 #define A4_FREQ 432.0
 
+
 int32_t sBuffer[BUFFER_LEN];
 float yinBuffer[BUFFER_LEN/2];
 
@@ -34,6 +38,7 @@ float dynamicMax = 100;
 bool isActive = false;
 
 NoiseFilter noiseFilter;
+WiFiStreamer streamer;
 
 // ───────── PITCH ─────────
 float pitchFinal = 0;
@@ -46,10 +51,14 @@ bool tuned = false;
 // ───────── NOTE WITH OCTAVE ─────────
 String displayNoteWithOctave = "---";
 
+// 🔥 SISTEMA DE CONFIANÇA
+float confidenceLevel = 0.0;
+const float MIN_CONFIDENCE = 0.3;  // 🔥 Reduzido para permitir reconhecimento
+
 // ───────── PITCH VALIDATION ─────────
 float lastValidPitch = 0;
 unsigned long lastValidPitchTime = 0;
-const float MIN_PITCH_FREQ = 80.0;   // Frequência mínima válida
+const float MIN_PITCH_FREQ = 60.0;   // 🔥 Reduzido para C2 (65.4Hz)
 const float MAX_PITCH_FREQ = 800.0;  // Frequência máxima válida
 const float PITCH_COHERENCE_TOLERANCE = 0.3; // 30% tolerância
 const unsigned long PITCH_TIMEOUT = 2000; // 2s timeout
@@ -59,12 +68,13 @@ String currentNote = "---";
 String lockedNote  = "---";
 int stabilityCounter = 0;
 int noteChangeCounter = 0;
-const int NOTE_STABILITY_THRESHOLD = 12; // Mais exigente para estabilidade
-const int NOTE_CHANGE_THRESHOLD = 8;     // Mais histerese para mudanças
-const unsigned long NOTE_COOLDOWN = 500;  // Cooldown entre mudanças
+const int NOTE_STABILITY_THRESHOLD = 8;  // 🔥 Reduzido para permitir reconhecimento
+const int NOTE_CHANGE_THRESHOLD = 6;     // Mais histerese para mudanças
+const unsigned long NOTE_COOLDOWN = 300;  // 🔥 Reduzido cooldown para 300ms
 
 // ───────── DEBUG MODE ─────────
-bool debugMode = false;
+bool debugMode = true;   // 🔥 ATIVADO para ver logs de oitava
+bool testMode = false;    // Modo de teste sequencial
 unsigned long noteChangeCount = 0;
 unsigned long lastNoteChangeTime = 0;
 
@@ -122,15 +132,19 @@ float detectPitch(int32_t* buffer, int len, int sampleRate) {
     }
   }
 
-  // Validação mínima de crossings
-  if (crossings < 6) return 0;
+  // Calcular frequência primeiro
+  float calculatedFreq = (crossings * sampleRate) / (2.0 * len);
 
-  // Calcular frequência
-  float freq = (crossings * sampleRate) / (2.0 * len);
+  // Validação mínima de crossings (ajustada por frequência)
+  int minCrossings = 6;
+  if (calculatedFreq < 100.0) minCrossings = 8;  // Mais exigente para baixas frequências
+  if (calculatedFreq < 80.0) minCrossings = 10; // Ainda mais exigente para C2
+  
+  if (crossings < minCrossings) return 0;
 
   // Filtrar frequências inválidas
-  if (freq < MIN_PITCH_FREQ || freq > MAX_PITCH_FREQ) {
-    Logger::pitch("Pitch out of range: " + String(freq));
+  if (calculatedFreq < MIN_PITCH_FREQ || calculatedFreq > MAX_PITCH_FREQ) {
+    Logger::pitch("Pitch out of range: " + String(calculatedFreq));
     return 0;
   }
 
@@ -141,12 +155,12 @@ float detectPitch(int32_t* buffer, int len, int sampleRate) {
   
   // Rejeitar se SNR muito baixo (ruído)
   if (snr < 0.01) {
-    Logger::pitch("Low SNR pitch rejected: " + String(freq) + " SNR:" + String(snr));
+    Logger::pitch("Low SNR pitch rejected: " + String(calculatedFreq) + " SNR:" + String(snr));
     return 0;
   }
 
-  Logger::pitch("Valid pitch: " + String(freq) + " SNR:" + String(snr));
-  return freq;
+  Logger::pitch("Valid pitch: " + String(calculatedFreq) + " SNR:" + String(snr));
+  return calculatedFreq;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -228,8 +242,32 @@ void analyze(float freq) {
   int idx = (rounded % 12 + 12) % 12;
   String newNote = noteNames[idx];
 
-  // 🔥 CÁLCULO DA OITAVA
-  int octave = (rounded / 12) - 1;  // A4=69 → (69/12)-1=4
+  // 🔥 CÁLCULO DA OITAVA CORRIGIDO
+  // Fórmula 1: Padrão MIDI (C-1=0, C0=12, C1=24, C2=36, C3=48, C4=60, A4=69)
+  int octave1 = (rounded - 12) / 12;
+  
+  // Fórmula 2: Ajuste direto (testar qual funciona)
+  int octave2 = (rounded / 12) - 1;
+  
+  // 🔥 DEBUG COMPARATIVO
+  Logger::pitch("OCTAVE COMPARISON - Freq: " + String(freq) + 
+                " Note: " + String(note) + 
+                " Rounded: " + String(rounded) + 
+                " Octave1: " + String(octave1) +
+                " Octave2: " + String(octave2) +
+                " A4_FREQ: " + String(A4_FREQ));
+  
+  // 🔥 ESCOLHER FÓRMULA CORRETA (testar octave1 primeiro)
+  int octave = octave1;  // Tentar padrão MIDI
+  
+  // 🔥 VALIDAÇÃO ESPECÍFICA
+  if (freq > 430 && freq < 435) {  // A4 range
+    if (octave != 4) {
+      Logger::pitch("ERROR: A4 octave should be 4, got " + String(octave) + " - trying formula 2");
+      octave = octave2;  // Fallback para fórmula 2
+    }
+  }
+  
   String noteWithOctave = newNote + String(octave);  // "A4", "C3", "G5"
   displayNoteWithOctave = noteWithOctave;
 
@@ -257,29 +295,32 @@ void analyze(float freq) {
     return; // Bloquear mudança muito rápida
   }
 
-  // Sistema melhorado de estabilidade
+  // Sistema melhorado de estabilidade com confiança
   if (newNote == currentNote) {
     stabilityCounter++;
     noteChangeCounter = 0;
+    // 🔥 AUMENTAR CONFIANÇA GRADUALMENTE
+    confidenceLevel = fmin(confidenceLevel + 0.05, 1.0);
   } else {
     noteChangeCounter++;
-    // Só muda se tiver histerese suficiente
-    if (noteChangeCounter >= NOTE_CHANGE_THRESHOLD) {
+    confidenceLevel = 0.0; // Resetar confiança na mudança
+    // Só muda se tiver histerese suficiente E confiança mínima
+    if (noteChangeCounter >= NOTE_CHANGE_THRESHOLD && confidenceLevel >= MIN_CONFIDENCE) {
       currentNote = newNote;
       stabilityCounter = 0;
       noteChangeCounter = 0;
       lastNoteChange = millis(); // 🔥 Registrar mudança
-      Logger::pitch("Note changed to: " + newNote);
+      Logger::pitch("Note changed to: " + newNote + " (confidence: " + String(confidenceLevel) + ")");
     }
   }
 
-  // Nota considerada estável apenas após threshold maior
-  if (stabilityCounter >= NOTE_STABILITY_THRESHOLD) {
+  // Nota considerada estável apenas após threshold E confiança
+  if (stabilityCounter >= NOTE_STABILITY_THRESHOLD && confidenceLevel >= MIN_CONFIDENCE) {
     lockedNote = currentNote;
     displayNote = lockedNote;
     displayNoteWithOctave = noteWithOctave;  // Atualizar nota com oitava
     noteStable = true;
-    Logger::pitch("Note locked: " + lockedNote + " (" + noteWithOctave + ")");
+    Logger::pitch("Note locked: " + lockedNote + " (" + noteWithOctave + ") - confidence: " + String(confidenceLevel) + ")");
   } else if (currentNote != "---" && stabilityCounter > 1) {
     // Mostra nota detectada mas não confirmada
     displayNote = currentNote;
@@ -397,12 +438,16 @@ void setup() {
   // 🔥 INICIALIZA SISTEMA DE LOGS
   Logger::setLevel(LOG_INFO); // Nível de produção para reduzir spam
   Logger::info("=== ESP32 Audio Pitch Engine Starting ===");
-  Logger::info("Version: 0.2.1 - Noise Filter + Debug");
+  Logger::info("Version: 0.3.0 - Standalone (No Backend)");
   Logger::info("Activity threshold: 0.35 (increased from 0.25)");
 
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.setTextColor(SSD1306_WHITE);
-display.setTextWrap(false);
+  display.setTextWrap(false);
+
+  // WIFI STREAMER DESATIVADO - Não usando backend
+  Logger::info("=== WiFi Streaming Disabled ===");
+  Logger::info("ESP32 operating in standalone mode");
 
   i2s_config_t config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
@@ -434,6 +479,9 @@ const unsigned long LOOP_RATE_LIMIT = 100; // 10Hz max para output
 // ═══════════════════════════════════════════════════════════
 void loop() {
 
+  // 🔥 WiFiStreamer desativado - não usando backend
+  // streamer.loop();
+
   size_t bytesIn = 0;
   i2s_read(I2S_PORT, sBuffer, sizeof(sBuffer), &bytesIn, portMAX_DELAY);
 
@@ -460,7 +508,15 @@ void loop() {
   float pitch = detectPitch(sBuffer, samples, 16000);
   pitchFinal = smooth(pitch);
 
+  // 🔥 CONVERTER PARA PADRÃO 432 Hz
+  if (pitchFinal > 0) {
+    pitchFinal = pitchFinal * (432.0 / 440.0); // Converter de 440 Hz para 432 Hz
+  }
+
   analyze(pitchFinal);
+
+  // 🔥 STREAM DE DADOS PARA IOT MANAGER - DESATIVADO
+  // Não usando backend - ESP32 operando como dispositivo standalone
 
   digitalWrite(LED_PIN, tuned && isActive);
 
@@ -480,4 +536,14 @@ void loop() {
     }
     lastLoopTime = currentTime;
   }
+  
+  // 🔥 DEBUG DASHBOARD
+  DebugDashboard::update(
+    pitchFinal,
+    currentNote,
+    cents,
+    confidenceLevel,
+    isActive,
+    noteStable
+  );
 }
