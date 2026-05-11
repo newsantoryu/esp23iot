@@ -1,11 +1,258 @@
+# Test Suite - ESP32 Audio Pitch Engine
 
-This directory is intended for PlatformIO Test Runner and project tests.
+This directory contains the test suite for the ESP32 Audio Pitch Engine project, designed to ensure the reliability and accuracy of the pitch detection system.
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+## 📋 Test Structure
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+### Test Categories
+
+#### 1. **Unit Tests**
+Test individual components in isolation:
+- `test_pitch_detector.cpp` - Pitch detection algorithm validation
+- `test_noise_filter.cpp` - Noise filtering functionality
+- `test_frequency_converter.cpp` - Frequency to note conversion
+- `test_audio_buffer.cpp` - Audio buffer management
+
+#### 2. **Integration Tests**
+Test component interactions:
+- `test_audio_pipeline.cpp` - Complete audio processing pipeline
+- `test_display_integration.cpp` - OLED display integration
+- `test_wifi_streaming.cpp` - Data streaming functionality
+
+#### 3. **Hardware Tests**
+Validate hardware-specific functionality:
+- `test_i2s_input.cpp` - I2S audio input validation
+- `test_oled_display.cpp` - OLED display hardware tests
+- `test_gpio_pins.cpp` - GPIO pin functionality
+
+#### 4. **Performance Tests**
+Measure system performance:
+- `test_latency.cpp` - Processing latency measurements
+- `test_memory_usage.cpp` - Memory consumption analysis
+- `test_accuracy.cpp` - Pitch detection accuracy validation
+
+## 🚀 Running Tests
+
+### Prerequisites
+- PlatformIO installed
+- ESP32 development board connected
+- Test hardware (OLED, I2S microphone) connected
+
+### Basic Test Execution
+```bash
+# Run all tests
+pio test
+
+# Run specific test file
+pio test -f test_pitch_detector
+
+# Run with verbose output
+pio test -v
+
+# Run tests for specific environment
+pio test -e esp32doit-devkit-v1
+```
+
+### Test Configuration
+```ini
+# platformio.ini test configuration
+test_framework = unity
+test_build_project_src = true
+build_flags =
+    -DUNIT_TEST
+    -DCORE_DEBUG_LEVEL=3
+```
+
+## 📊 Test Coverage
+
+### Current Coverage Areas
+- **Pitch Detection**: YIN algorithm implementation
+- **Audio Processing**: I2S input and filtering
+- **Note Analysis**: Frequency to note conversion
+- **Display Management**: OLED rendering
+- **Data Streaming**: WiFi and serial output
+- **Error Handling**: Exception and error scenarios
+
+### Coverage Goals
+- **Unit Tests**: >90% code coverage
+- **Integration Tests**: All major workflows
+- **Hardware Tests**: Critical hardware interactions
+- **Performance Tests**: Key metrics validation
+
+## 🧪 Test Data
+
+### Test Audio Samples
+- **Sine Waves**: Pure tones at known frequencies
+- **Musical Instruments**: Real instrument recordings
+- **Noise Samples**: Various noise types for filtering tests
+- **Silence**: Empty audio for baseline tests
+
+### Expected Results
+```cpp
+// Example test expectations
+TEST_ASSERT_EQUAL_STRING("A4", detector.frequencyToNote(440.0));
+TEST_ASSERT_FLOAT_WITHIN(0.1, 440.0, detectedFrequency);
+TEST_ASSERT_TRUE(detector.isSignalActive(amplitude, threshold));
+```
+
+## 🔧 Test Development
+
+### Writing New Tests
+
+#### Test Structure
+```cpp
+#include <unity.h>
+#include "../src/utils/PitchDetector.h"
+
+void setUp(void) {
+    // Test setup code
+}
+
+void tearDown(void) {
+    // Test cleanup code
+}
+
+void test_frequency_to_note_conversion() {
+    PitchDetector detector;
+    
+    // Test A4 = 440Hz
+    String note = detector.frequencyToNote(440.0);
+    TEST_ASSERT_EQUAL_STRING("A4", note.c_str());
+    
+    // Test C4 = 261.63Hz
+    note = detector.frequencyToNote(261.63);
+    TEST_ASSERT_EQUAL_STRING("C4", note.c_str());
+}
+
+int main() {
+    UNITY_BEGIN();
+    RUN_TEST(test_frequency_to_note_conversion);
+    UNITY_END();
+    return 0;
+}
+```
+
+#### Naming Conventions
+- Test files: `test_<component>.cpp`
+- Test functions: `test_<functionality>()`
+- Test cases: Descriptive names explaining what's being tested
+
+#### Best Practices
+- **Arrange-Act-Assert** pattern
+- **Independent** tests (no dependencies between tests)
+- **Repeatable** results
+- **Clear** test names and descriptions
+- **Comprehensive** edge case coverage
+
+### Mock Objects
+```cpp
+// Mock hardware for unit tests
+class MockDisplay {
+public:
+    void clearDisplay() { clearCalled = true; }
+    void printf(const char* format, ...) { printfCalled = true; }
+    
+    bool clearCalled = false;
+    bool printfCalled = false;
+};
+```
+
+## 🐛 Debugging Tests
+
+### Common Issues
+
+#### 1. **Hardware Not Connected**
+```
+Error: I2S initialization failed
+Solution: Connect I2S microphone and check pins
+```
+
+#### 2. **Memory Issues**
+```
+Error: Heap allocation failed
+Solution: Check memory usage, reduce buffer sizes
+```
+
+#### 3. **Timing Issues**
+```
+Error: Test timeout
+Solution: Increase timeout or optimize test code
+```
+
+### Debug Tools
+```bash
+# Monitor serial output during tests
+pio device monitor --filter esp32_exception_decoder
+
+# Check memory usage
+pio test --target upload && pio device monitor
+```
+
+### Test Logs
+```bash
+# Enable verbose logging
+pio test -v
+
+# Save test output
+pio test > test_results.log
+```
+
+## 📈 Performance Benchmarks
+
+### Target Metrics
+- **Latency**: < 100ms for pitch detection
+- **Accuracy**: ±5 cents for musical notes
+- **Memory Usage**: < 80% of available heap
+- **CPU Usage**: < 70% during processing
+
+### Benchmark Tests
+```cpp
+void test_pitch_detection_latency() {
+    unsigned long start = micros();
+    float pitch = detector.calculatePitch();
+    unsigned long duration = micros() - start;
+    
+    TEST_ASSERT_LESS_THAN(100000, duration); // < 100ms
+}
+```
+
+## 🔄 Continuous Integration
+
+### Automated Testing
+```yaml
+# .github/workflows/test.yml
+name: Run Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup PlatformIO
+        run: pip install platformio
+      - name: Run Tests
+        run: pio test
+```
+
+### Test Reports
+- **Coverage Reports**: Code coverage analysis
+- **Performance Reports**: Benchmark results
+- **Test Results**: Pass/fail statistics
+- **Regression Reports**: Comparison with previous runs
+
+## 📚 Resources
+
+### Documentation
+- [PlatformIO Unit Testing Guide](https://docs.platformio.org/en/latest/advanced/unit-testing/index.html)
+- [Unity Testing Framework](https://github.com/ThrowTheSwitch/Unity)
+- [ESP32 Testing Best Practices](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/unit-tests.html)
+
+### Tools
+- **Unity**: Test framework for embedded systems
+- **PlatformIO Test Runner**: Test execution and reporting
+- **Mock Generators**: Create mock objects for testing
+- **Coverage Tools**: Analyze test coverage
+
+---
+
+**Need help adding tests? Check the [Development Guide](../docs/development/README.md) or open an issue on GitHub!**
