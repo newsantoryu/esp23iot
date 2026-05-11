@@ -16,6 +16,7 @@ Um sistema embarcado de detecção de pitch musical em tempo real desenvolvido p
 - **Sistema de Debug**: Dashboard completo para diagnóstico
 - **Análise de Notas**: Detecção precisa de notas musicais com oitavas e cents
 - **Configuração A4**: Suporte para diferentes padrões de afinação (432Hz, 440Hz)
+- **OroborusUnity**: Detecção de padrões respiratórios para saúde e bem-estar
 
 ## 📋 Requisitos de Hardware
 
@@ -113,6 +114,7 @@ float activityThreshold = 0.35; // Sensibilidade de detecção
 - [🔧 Referência da API](docs/api/API_REFERENCE.md)
 - 🏗️ [Arquitetura do Sistema](docs/user/ARCHITECTURE.md)
 - 👨‍💻 [Guia de Desenvolvimento](docs/development/README.md)
+- 🌊 [Integrações](docs/integrations/README.md)
 - 🐛 [Histórico de Correções](docs/development/)
 
 ## 🧪 Testes e Validação

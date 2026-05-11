@@ -38,7 +38,20 @@ Demonstrates how to stream pitch data over WiFi:
 - Buffer management
 - Health monitoring
 
-### 3. **advanced_filtering.cpp** - Advanced Noise Filtering
+### 3. **breathing_detection.cpp** - OroborusUnity Integration
+Demonstrates breathing pattern detection using the OroborusUnity integration:
+- Real-time breathing pattern analysis
+- Breathing rate calculation (BPM)
+- Pattern classification (normal, deep, shallow, irregular)
+- Visual feedback and data streaming
+
+**Features:**
+- Breathing pattern recognition
+- Biometric health monitoring
+- Meditation support
+- WiFi streaming of breathing data
+
+### 4. **advanced_filtering.cpp** - Advanced Noise Filtering
 Shows advanced noise filtering techniques:
 - Multi-stage filtering
 - Adaptive threshold adjustment
@@ -51,7 +64,7 @@ Shows advanced noise filtering techniques:
 - Performance optimization
 - Detailed diagnostics
 
-### 4. **multi_instrument.cpp** - Multi-Instrument Profiles
+### 5. **multi_instrument.cpp** - Multi-Instrument Profiles
 Demonstrates instrument-specific tuning:
 - Different tuning profiles
 - Instrument selection
